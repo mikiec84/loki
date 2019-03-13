@@ -5,9 +5,10 @@ APIKEY="${2:-}"
 INSTANCEURL="${3:-}"
 NAMESPACE="${4:-default}"
 DATAROOT="${5-/var/lib/docker}"
+PARSER="${6-docker}"
 
-if [ -z "$INSTANCEID" -o -z "$APIKEY" -o -z "$INSTANCEURL" -o -z "$NAMESPACE" -o -z "$DATAROOT" ]; then
-    echo "usage: $0 <instanceId> <apiKey> <url> <namespace> <dataroot>"
+if [ -z "$INSTANCEID" -o -z "$APIKEY" -o -z "$INSTANCEURL" -o -z "$NAMESPACE" -o -z "$DATAROOT" -o -z "$PARSER"]; then
+    echo "usage: $0 <instanceId> <apiKey> <url> <namespace> <dataroot> <parser>"
     exit 1
 fi
 
@@ -16,7 +17,8 @@ apiVersion: v1
 data:
   promtail.yml: |
     scrape_configs:
-    - job_name: kubernetes-pods-name
+    - entry_parser: <parser>
+      job_name: kubernetes-pods-name
       kubernetes_sd_configs:
       - role: pod
       relabel_configs:
@@ -44,7 +46,7 @@ data:
         target_label: instance
       - action: replace
         source_labels:
-        - __meta_kubernetes_container_name
+        - __meta_kubernetes_pod_container_name
         target_label: container_name
       - action: labelmap
         regex: __meta_kubernetes_pod_label_(.+)
@@ -54,7 +56,8 @@ data:
         - __meta_kubernetes_pod_uid
         - __meta_kubernetes_pod_container_name
         target_label: __path__
-    - job_name: kubernetes-pods-controller
+    - entry_parser: <parser>
+      job_name: kubernetes-pods-controller
       kubernetes_sd_configs:
       - role: pod
       relabel_configs:
@@ -65,6 +68,10 @@ data:
         regex: .+
         source_labels:
         - __meta_kubernetes_pod_label_name
+      - action: drop
+        regex: ^([0-9a-z-.]+)(-[0-9a-f]{8,10})$
+        source_labels:
+        - __meta_kubernetes_pod_controller_name
       - action: replace
         replacement: $1
         separator: /
@@ -82,7 +89,55 @@ data:
         target_label: instance
       - action: replace
         source_labels:
-        - __meta_kubernetes_container_name
+        - __meta_kubernetes_pod_container_name
+        target_label: container_name
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - replacement: /var/log/pods/$1/*.log
+        separator: /
+        source_labels:
+        - __meta_kubernetes_pod_uid
+        - __meta_kubernetes_pod_container_name
+        target_label: __path__
+    - entry_parser: <parser>
+      job_name: kubernetes-pods-indirect-controller
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - source_labels:
+        - __meta_kubernetes_pod_node_name
+        target_label: __host__
+      - action: drop
+        regex: .+
+        source_labels:
+        - __meta_kubernetes_pod_label_name
+      - action: keep
+        regex: ^([0-9a-z-.]+)(-[0-9a-f]{8,10})$
+        source_labels:
+        - __meta_kubernetes_pod_controller_name
+      - action: replace
+        regex: ^([0-9a-z-.]+)(-[0-9a-f]{8,10})$
+        source_labels:
+        - __meta_kubernetes_pod_controller_name
+        target_label: __tmp_controller
+      - action: replace
+        replacement: $1
+        separator: /
+        source_labels:
+        - __meta_kubernetes_namespace
+        - __tmp_controller
+        target_label: job
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_name
+        target_label: instance
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_container_name
         target_label: container_name
       - action: labelmap
         regex: __meta_kubernetes_pod_label_(.+)
@@ -193,4 +248,5 @@ echo "$TEMPLATE" | sed \
   -e "s#<apiKey>#${APIKEY}#" \
   -e "s#<instanceUrl>#${INSTANCEURL}#" \
   -e "s#<namespace>#${NAMESPACE}#" \
-  -e "s#<dataroot>#${DATAROOT}#"
+  -e "s#<dataroot>#${DATAROOT}#" \
+  -e "s#<parser>#${PARSER}#g"
